@@ -338,14 +338,18 @@ export default function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
               onClick={() => setIsClearConfirmOpen(false)}
-              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              className="absolute inset-0 bg-black/60"
+              style={{ willChange: 'opacity' }}
             />
             <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              initial={{ opacity: 0, scale: 0.98, y: 8 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              exit={{ opacity: 0, scale: 0.98, y: 8 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
               className={`relative w-full max-w-sm ${theme === 'dark' ? 'bg-zinc-900 border-white/10' : 'bg-white border-black/5'} border shadow-2xl rounded-[2rem] p-6 sm:p-8 overflow-hidden`}
+              style={{ willChange: 'transform, opacity' }}
             >
               <div className="flex flex-col items-center text-center gap-6">
                 <div className={`w-14 h-14 sm:w-16 sm:h-16 rounded-full flex items-center justify-center ${theme === 'dark' ? 'bg-red-500/10' : 'bg-red-50'}`}>
@@ -387,14 +391,18 @@ export default function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
               onClick={() => setIsExportConfirmOpen(false)}
-              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              className="absolute inset-0 bg-black/60"
+              style={{ willChange: 'opacity' }}
             />
             <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              initial={{ opacity: 0, scale: 0.98, y: 8 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              exit={{ opacity: 0, scale: 0.98, y: 8 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
               className={`relative w-full max-w-sm ${theme === 'dark' ? 'bg-zinc-900 border-white/10' : 'bg-white border-black/5'} border shadow-2xl rounded-[2rem] p-6 sm:p-8 overflow-hidden`}
+              style={{ willChange: 'transform, opacity' }}
             >
               <div className="flex flex-col items-center text-center gap-6">
                 <div className={`w-14 h-14 sm:w-16 sm:h-16 rounded-full flex items-center justify-center ${theme === 'dark' ? 'bg-emerald-500/10' : 'bg-emerald-50'}`}>
