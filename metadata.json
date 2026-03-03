@@ -1,0 +1,5 @@
+{
+  "name": "ZenWriter",
+  "description": "A minimal, distraction-free full-screen text editor with one-click PDF export.",
+  "requestFramePermissions": []
+}
