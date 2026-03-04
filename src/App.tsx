@@ -55,6 +55,7 @@ export default function App() {
     underline: false
   });
   const editorRef = useRef<HTMLDivElement>(null);
+  const lastSelection = useRef<Range | null>(null);
 
   // Update formatting state based on selection
   const updateFormatState = useCallback(() => {
@@ -63,6 +64,12 @@ export default function App() {
       italic: document.queryCommandState('italic'),
       underline: document.queryCommandState('underline')
     });
+
+    // Save selection for manual paste button
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.anchorNode)) {
+      lastSelection.current = sel.getRangeAt(0).cloneRange();
+    }
   }, []);
 
   useEffect(() => {
@@ -159,27 +166,40 @@ export default function App() {
     // If it's a manual paste button click
     if (!e) {
       try {
+        // Restore selection if lost
+        if (lastSelection.current) {
+          const sel = window.getSelection();
+          sel?.removeAllRanges();
+          sel?.addRange(lastSelection.current);
+        }
+
         window.focus();
+        if (editorRef.current) editorRef.current.focus();
+
         // Try to use the newer Clipboard API to read rich text if possible
         if (navigator.clipboard && navigator.clipboard.read) {
-          const items = await navigator.clipboard.read();
-          for (const item of items) {
-            if (item.types.includes('text/html')) {
-              const blob = await item.getType('text/html');
-              const html = await blob.text();
-              processHtmlPaste(html);
-              setIsPasted(true);
-              setTimeout(() => setIsPasted(false), 2000);
-              return;
+          try {
+            const items = await navigator.clipboard.read();
+            for (const item of items) {
+              if (item.types.includes('text/html')) {
+                const blob = await item.getType('text/html');
+                const html = await blob.text();
+                processHtmlPaste(html);
+                setIsPasted(true);
+                setTimeout(() => setIsPasted(false), 2000);
+                return;
+              }
             }
+          } catch (readErr) {
+            console.warn('Clipboard read failed, falling back to readText');
           }
         }
         
-        // Fallback to plain text if HTML not found or API not supported
+        // Fallback to plain text
         const clipboardText = await navigator.clipboard.readText();
         if (clipboardText) {
           const escaped = clipboardText.replace(/\n/g, '<br>');
-          document.execCommand('insertHTML', false, escaped);
+          insertAtCursor(escaped);
           setIsPasted(true);
           setTimeout(() => setIsPasted(false), 2000);
         }
@@ -197,11 +217,47 @@ export default function App() {
 
     if (html) {
       processHtmlPaste(html);
-    } else {
+    } else if (plain) {
       const escaped = plain.replace(/\n/g, '<br>');
-      document.execCommand('insertHTML', false, escaped);
+      insertAtCursor(escaped);
     }
   }, []);
+
+  // Robust insertion method for mobile/desktop
+  const insertAtCursor = (html: string) => {
+    if (editorRef.current) {
+      editorRef.current.focus();
+    }
+    
+    // Try execCommand first for undo history
+    const success = document.execCommand('insertHTML', false, html);
+    
+    // Fallback for browsers where execCommand might fail or behave oddly
+    if (!success) {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        range.deleteContents();
+        const el = document.createElement('div');
+        el.innerHTML = html;
+        const frag = document.createDocumentFragment();
+        let node;
+        while ((node = el.firstChild)) {
+          frag.appendChild(node);
+        }
+        range.insertNode(frag);
+        // Move cursor to end
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    }
+    
+    // Always sync state
+    if (editorRef.current) {
+      setText(editorRef.current.innerHTML);
+    }
+  };
 
   // Helper to process and sanitize HTML paste while preserving B/I/U
   const processHtmlPaste = (html: string) => {
@@ -210,7 +266,6 @@ export default function App() {
     
     const clean = (node: Node): string => {
       if (node.nodeType === Node.TEXT_NODE) {
-        // Escape HTML special characters in text nodes
         return node.textContent?.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') || '';
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return '';
@@ -222,22 +277,32 @@ export default function App() {
       
       let result = children;
       
-      // Enhanced Bold Detection (Tags, Styles, Headers)
+      // Extremely Broad Bold Detection (ChatGPT, Mobile Browsers, etc.)
       const isBold = ['b', 'strong', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag) || 
-                     /font-weight\s*:\s*(bold|[6-9]00)/i.test(style);
+                     /font-weight\s*:\s*(bold|600|700|800|900)/i.test(style) ||
+                     el.style.fontWeight === 'bold' ||
+                     parseInt(el.style.fontWeight) >= 600 ||
+                     el.classList.contains('bold') ||
+                     el.classList.contains('font-bold');
       
-      // Enhanced Italic Detection
-      const isItalic = ['i', 'em'].includes(tag) || /font-style\s*:\s*italic/i.test(style);
+      // Broad Italic Detection
+      const isItalic = ['i', 'em'].includes(tag) || 
+                       /font-style\s*:\s*italic/i.test(style) ||
+                       el.style.fontStyle === 'italic' ||
+                       el.classList.contains('italic');
       
-      // Enhanced Underline Detection
-      const isUnderline = ['u'].includes(tag) || /text-decoration\s*:\s*underline/i.test(style);
+      // Broad Underline Detection
+      const isUnderline = ['u'].includes(tag) || 
+                          /text-decoration\s*:\s*underline/i.test(style) ||
+                          el.style.textDecoration.includes('underline') ||
+                          el.classList.contains('underline');
 
       if (isBold) result = `<b>${result}</b>`;
       if (isItalic) result = `<i>${result}</i>`;
       if (isUnderline) result = `<u>${result}</u>`;
       
       // Handle line breaks and block elements
-      if (['div', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr', 'article', 'section'].includes(tag)) {
+      if (['div', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr', 'article', 'section', 'header', 'footer'].includes(tag)) {
         return `<br>${result}`;
       }
       
@@ -245,13 +310,9 @@ export default function App() {
     };
 
     const sanitized = Array.from(doc.body.childNodes).map(clean).join('');
-    // Normalize line breaks and remove leading/trailing ones
     const finalHtml = sanitized.replace(/^(<br>)+/, '').replace(/(<br>)+$/, '');
     
-    if (editorRef.current) {
-      editorRef.current.focus();
-    }
-    document.execCommand('insertHTML', false, finalHtml);
+    insertAtCursor(finalHtml);
   };
 
   // Handle PDF Generation (Dynamic Import for performance)
