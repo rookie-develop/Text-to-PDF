@@ -39,6 +39,9 @@ export default function App() {
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
   const [isExportConfirmOpen, setIsExportConfirmOpen] = useState(false);
   const [pdfMargin, setPdfMargin] = useState<number>(20);
+  const [pdfFileName, setPdfFileName] = useState<string>(() => {
+    return `zenwriter-${new Date().toISOString().slice(0, 10)}`;
+  });
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
       return (localStorage.getItem('zenwriter_theme') as 'light' | 'dark') || 'light';
@@ -46,7 +49,36 @@ export default function App() {
       return 'light';
     }
   });
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [formatState, setFormatState] = useState({
+    bold: false,
+    italic: false,
+    underline: false
+  });
+  const editorRef = useRef<HTMLDivElement>(null);
+
+  // Update formatting state based on selection
+  const updateFormatState = useCallback(() => {
+    setFormatState({
+      bold: document.queryCommandState('bold'),
+      italic: document.queryCommandState('italic'),
+      underline: document.queryCommandState('underline')
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      updateFormatState();
+    };
+    document.addEventListener('selectionchange', handleSelectionChange);
+    return () => document.removeEventListener('selectionchange', handleSelectionChange);
+  }, [updateFormatState]);
+
+  // Helper to strip HTML for word count
+  const getPlainText = (html: string) => {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    return tmp.textContent || tmp.innerText || '';
+  };
 
   // Debounced text for auto-save to reduce CPU load
   const debouncedText = useDebounce(text, 1000);
@@ -59,6 +91,25 @@ export default function App() {
       console.warn('Storage quota exceeded or unavailable');
     }
   }, [debouncedText]);
+
+  // Sync editor content with state (only when not focused to avoid cursor jumps)
+  useEffect(() => {
+    if (editorRef.current && document.activeElement !== editorRef.current) {
+      editorRef.current.innerHTML = text;
+    }
+  }, [text]);
+
+  const handleInput = (e: React.FormEvent<HTMLDivElement>) => {
+    setText(e.currentTarget.innerHTML);
+  };
+
+  const execCommand = (command: string) => {
+    document.execCommand(command, false);
+    updateFormatState();
+    if (editorRef.current) {
+      editorRef.current.focus();
+    }
+  };
 
   // Save theme to localStorage
   useEffect(() => {
@@ -79,20 +130,23 @@ export default function App() {
 
   const handleClearAll = useCallback(() => {
     setText('');
+    if (editorRef.current) {
+      editorRef.current.innerHTML = '';
+    }
     setIsClearConfirmOpen(false);
-    // Use requestAnimationFrame for smoother focus transition on older devices
     requestAnimationFrame(() => {
-      if (textareaRef.current) {
-        textareaRef.current.focus();
+      if (editorRef.current) {
+        editorRef.current.focus();
       }
     });
   }, []);
 
   // Handle Copy to Clipboard
   const handleCopy = useCallback(async () => {
-    if (!text) return;
+    const plainText = getPlainText(text);
+    if (!plainText) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(plainText);
       setIsCopied(true);
       setTimeout(() => setIsCopied(false), 2000);
     } catch (err) {
@@ -101,68 +155,75 @@ export default function App() {
   }, [text]);
 
   // Handle Paste from Clipboard
-  const handlePaste = useCallback(async () => {
-    try {
-      window.focus();
-
-      if (!navigator.clipboard || !navigator.clipboard.readText) {
-        throw new Error('Clipboard API not supported');
-      }
-
-      if (navigator.permissions) {
-        try {
-          const status = await navigator.permissions.query({ name: 'clipboard-read' as PermissionName });
-          if (status.state === 'denied') {
-            setPasteError('Access denied');
-            setTimeout(() => setPasteError(null), 3000);
-            return;
-          }
-        } catch (e) {}
-      }
-
-      const clipboardText = await navigator.clipboard.readText();
-      if (clipboardText) {
-        setText(prev => prev + (prev ? '\n' : '') + clipboardText);
-        setIsPasted(true);
-        setTimeout(() => setIsPasted(false), 2000);
-        requestAnimationFrame(() => {
-          if (textareaRef.current) {
-            textareaRef.current.focus();
-          }
-        });
-      } else {
-        setPasteError('Clipboard empty');
+  const handlePaste = useCallback(async (e?: React.ClipboardEvent) => {
+    // If it's a manual paste button click
+    if (!e) {
+      try {
+        window.focus();
+        if (!navigator.clipboard || !navigator.clipboard.readText) {
+          throw new Error('Clipboard API not supported');
+        }
+        const clipboardText = await navigator.clipboard.readText();
+        if (clipboardText) {
+          const escaped = clipboardText.replace(/\n/g, '<br>');
+          document.execCommand('insertHTML', false, escaped);
+          setIsPasted(true);
+          setTimeout(() => setIsPasted(false), 2000);
+        }
+      } catch (err: any) {
+        setPasteError('Use Ctrl+V');
         setTimeout(() => setPasteError(null), 3000);
       }
-    } catch (err: any) {
-      console.error('Failed to paste: ', err);
-      if (err.name === 'NotAllowedError' || err.message.includes('denied') || err.message.includes('blocked')) {
-        setPasteError('Use Ctrl+V');
-      } else {
-        setPasteError('Failed');
-      }
-      setTimeout(() => setPasteError(null), 3000);
+      return;
+    }
+
+    // If it's a native paste event
+    e.preventDefault();
+    const html = e.clipboardData.getData('text/html');
+    const plain = e.clipboardData.getData('text/plain');
+
+    if (html) {
+      // Basic sanitization: keep only b, i, u, div, p, br
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const clean = (node: Node): string => {
+        if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+        const el = node as HTMLElement;
+        const tag = el.tagName.toLowerCase();
+        const children = Array.from(el.childNodes).map(clean).join('');
+        if (['b', 'strong'].includes(tag)) return `<b>${children}</b>`;
+        if (['i', 'em'].includes(tag)) return `<i>${children}</i>`;
+        if (['u'].includes(tag)) return `<u>${children}</u>`;
+        if (['div', 'p', 'br'].includes(tag)) return `<br>${children}`;
+        return children;
+      };
+      const sanitized = Array.from(doc.body.childNodes).map(clean).join('');
+      document.execCommand('insertHTML', false, sanitized);
+    } else {
+      const escaped = plain.replace(/\n/g, '<br>');
+      document.execCommand('insertHTML', false, escaped);
     }
   }, []);
 
   // Handle PDF Generation (Dynamic Import for performance)
   const handleDownloadPDF = useCallback(async () => {
-    if (!text.trim()) return;
+    const plainText = getPlainText(text);
+    if (!plainText.trim()) return;
     
     setIsExportConfirmOpen(false);
     setIsGenerating(true);
     try {
-      // Lazy load html2pdf to reduce initial load
       const { default: html2pdf } = await import('html2pdf.js');
 
-      const wordCount = text.trim().split(/\s+/).length;
+      const wordCount = plainText.trim().split(/\s+/).length;
       let scale = 2.0;
       if (wordCount > 10000) scale = 1.0;
       else if (wordCount > 5000) scale = 1.5;
 
       const opt = {
         margin: [pdfMargin, pdfMargin, pdfMargin, pdfMargin] as [number, number, number, number],
-        filename: `zenwriter-${new Date().toISOString().slice(0,10)}.pdf`,
+        filename: `${pdfFileName || 'zenwriter-document'}.pdf`,
         image: { type: 'jpeg' as const, quality: 0.98 },
         html2canvas: { 
           scale: scale,
@@ -173,12 +234,6 @@ export default function App() {
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const, compress: true },
         pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
       };
-
-      // Create a clean HTML structure for the PDF
-      const paragraphs = text.split('\n').map(p => {
-        const escaped = p.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') || '&nbsp;';
-        return `<p style="margin-bottom: 1em; text-align: justify; page-break-inside: avoid;">${escaped}</p>`;
-      }).join('');
 
       const pdfContent = `
         <div style="
@@ -195,14 +250,15 @@ export default function App() {
             <span>ZenWriter</span>
             <span>${new Date().toLocaleDateString()}</span>
           </div>
-          ${paragraphs}
+          <div style="text-align: justify;">
+            ${text}
+          </div>
           <div style="margin-top: 50px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 8pt; color: #ccc;">
             Generated by ZenWriter
           </div>
         </div>
       `;
 
-      // Simplified call pattern which is more reliable across versions
       await html2pdf().from(pdfContent).set(opt).save();
       
     } catch (err) {
@@ -211,91 +267,110 @@ export default function App() {
     } finally {
       setIsGenerating(false);
     }
-  }, [text, pdfMargin]);
+  }, [text, pdfMargin, pdfFileName]);
 
   return (
     <div className={`min-h-screen transition-colors duration-500 ${theme === 'dark' ? 'bg-[#0A0A0A] text-[#E5E5E5]' : 'bg-[#FDFDFB] text-[#1A1A1A]'} font-sans selection:bg-emerald-100 selection:text-emerald-900 dark:selection:bg-emerald-900/30 dark:selection:text-emerald-100 overflow-x-hidden`}>
       {/* Floating Toolbar - Responsive and Touch-Friendly */}
-      <div className="fixed top-4 right-4 sm:top-6 sm:right-6 z-50 flex items-center gap-2 sm:gap-3">
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 sm:translate-x-0 sm:bottom-auto sm:top-6 sm:right-6 sm:left-auto z-50 w-[92%] sm:w-auto max-w-md sm:max-w-none">
         <motion.div
-          initial={{ opacity: 0, y: -10 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className={`flex items-center gap-1 sm:gap-2 ${theme === 'dark' ? 'bg-zinc-900/90 border-white/5' : 'bg-white/90 border-black/5'} backdrop-blur-md border shadow-lg rounded-full px-2 py-1.5`}
+          className={`flex items-center justify-between sm:justify-start gap-1 sm:gap-1.5 ${theme === 'dark' ? 'bg-zinc-900/95 border-white/10' : 'bg-white/95 border-black/10'} backdrop-blur-xl border shadow-2xl rounded-2xl sm:rounded-full px-2 py-2 sm:px-3 sm:py-2 overflow-hidden`}
         >
-          <button
-            onClick={handleCopy}
-            title="Copy all text"
-            className={`p-3 sm:p-2 ${theme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-black/5'} rounded-full transition-colors relative group active:scale-95`}
-          >
-            {isCopied ? (
-              <Check className={`w-4 h-4 sm:w-4 sm:h-4 ${theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'}`} />
-            ) : (
-              <Copy className={`w-4 h-4 sm:w-4 sm:h-4 ${theme === 'dark' ? 'text-zinc-400 group-hover:text-zinc-100' : 'text-zinc-500 group-hover:text-zinc-900'}`} />
-            )}
-            <span className="hidden sm:block absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] font-medium bg-zinc-900 text-white px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-              {isCopied ? 'Copied!' : 'Copy'}
-            </span>
-          </button>
+          <div className="flex items-center gap-0.5 sm:gap-1">
+            <button
+              onClick={handleCopy}
+              title="Copy all text"
+              className={`p-2.5 sm:p-2 ${theme === 'dark' ? 'hover:bg-white/5 text-zinc-400' : 'hover:bg-black/5 text-zinc-500'} rounded-xl sm:rounded-full transition-colors active:scale-90 flex-shrink-0`}
+            >
+              {isCopied ? (
+                <Check className="w-4 h-4 text-emerald-500" />
+              ) : (
+                <Copy className="w-4 h-4" />
+              )}
+            </button>
 
-          <button
-            onClick={handlePaste}
-            title="Paste from clipboard"
-            className={`p-3 sm:p-2 ${theme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-black/5'} rounded-full transition-colors relative group active:scale-95`}
-          >
-            {isPasted ? (
-              <Check className={`w-4 h-4 sm:w-4 sm:h-4 ${theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'}`} />
-            ) : (
-              <ClipboardPaste className={`w-4 h-4 sm:w-4 sm:h-4 ${pasteError ? 'text-red-400' : theme === 'dark' ? 'text-zinc-400 group-hover:text-zinc-100' : 'text-zinc-500 group-hover:text-zinc-900'}`} />
-            )}
-            <span className={`hidden sm:block absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] font-medium ${pasteError ? 'bg-red-500' : 'bg-zinc-900'} text-white px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none`}>
-              {pasteError || (isPasted ? 'Pasted!' : 'Paste')}
-            </span>
-          </button>
+            <button
+              onClick={() => handlePaste()}
+              title="Paste from clipboard"
+              className={`p-2.5 sm:p-2 ${theme === 'dark' ? 'hover:bg-white/5 text-zinc-400' : 'hover:bg-black/5 text-zinc-500'} rounded-xl sm:rounded-full transition-colors active:scale-90 flex-shrink-0`}
+            >
+              {isPasted ? (
+                <Check className="w-4 h-4 text-emerald-500" />
+              ) : (
+                <ClipboardPaste className={`w-4 h-4 ${pasteError ? 'text-red-400' : ''}`} />
+              )}
+            </button>
+          </div>
 
-          <div className={`w-px h-4 ${theme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`} />
+          <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-white/10' : 'bg-black/10'} flex-shrink-0`} />
 
-          <button
-            onClick={() => setIsExportConfirmOpen(true)}
-            disabled={isGenerating || text.length === 0}
-            title="Download as PDF"
-            className={`p-3 sm:p-2 ${theme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-black/5'} rounded-full transition-colors relative group disabled:opacity-30 disabled:cursor-not-allowed active:scale-95`}
-          >
-            <FileDown className={`w-4 h-4 sm:w-4 sm:h-4 ${isGenerating ? (theme === 'dark' ? 'animate-pulse text-emerald-400' : 'animate-pulse text-emerald-600') : theme === 'dark' ? 'text-zinc-400 group-hover:text-zinc-100' : 'text-zinc-500 group-hover:text-zinc-900'}`} />
-            <span className="hidden sm:block absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] font-medium bg-zinc-900 text-white px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-              {isGenerating ? 'Generating...' : text.length === 0 ? 'Write something' : 'PDF'}
-            </span>
-          </button>
+          <div className="flex items-center gap-0.5 sm:gap-1">
+            <button
+              onClick={() => execCommand('bold')}
+              className={`p-2.5 sm:p-2 rounded-xl sm:rounded-full transition-all active:scale-90 flex-shrink-0 ${
+                formatState.bold 
+                  ? (theme === 'dark' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
+                  : (theme === 'dark' ? 'hover:bg-white/5 text-zinc-300' : 'hover:bg-black/5 text-zinc-800')
+              }`}
+              title="Bold (Ctrl+B)"
+            >
+              <span className="font-bold text-sm">B</span>
+            </button>
+            <button
+              onClick={() => execCommand('italic')}
+              className={`p-2.5 sm:p-2 rounded-xl sm:rounded-full transition-all active:scale-90 flex-shrink-0 ${
+                formatState.italic 
+                  ? (theme === 'dark' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
+                  : (theme === 'dark' ? 'hover:bg-white/5 text-zinc-300' : 'hover:bg-black/5 text-zinc-800')
+              }`}
+              title="Italic (Ctrl+I)"
+            >
+              <span className="italic text-sm">I</span>
+            </button>
+            <button
+              onClick={() => execCommand('underline')}
+              className={`p-2.5 sm:p-2 rounded-xl sm:rounded-full transition-all active:scale-90 flex-shrink-0 ${
+                formatState.underline 
+                  ? (theme === 'dark' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
+                  : (theme === 'dark' ? 'hover:bg-white/5 text-zinc-300' : 'hover:bg-black/5 text-zinc-800')
+              }`}
+              title="Underline (Ctrl+U)"
+            >
+              <span className="underline text-sm">U</span>
+            </button>
+          </div>
 
-          <div className={`w-px h-4 ${theme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`} />
+          <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-white/10' : 'bg-black/10'} flex-shrink-0`} />
 
-          <button
-            onClick={() => setIsClearConfirmOpen(true)}
-            disabled={text.length === 0}
-            title="Clear all text"
-            className={`p-3 sm:p-2 ${theme === 'dark' ? 'hover:bg-red-500/10' : 'hover:bg-red-50'} rounded-full transition-colors relative group disabled:opacity-30 disabled:cursor-not-allowed active:scale-95`}
-          >
-            <Trash2 className={`w-4 h-4 sm:w-4 sm:h-4 ${theme === 'dark' ? 'text-zinc-400 group-hover:text-red-400' : 'text-zinc-500 group-hover:text-red-500'}`} />
-            <span className="hidden sm:block absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] font-medium bg-zinc-900 text-white px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-              Clear
-            </span>
-          </button>
+          <div className="flex items-center gap-0.5 sm:gap-1">
+            <button
+              onClick={() => setIsExportConfirmOpen(true)}
+              disabled={isGenerating || getPlainText(text).length === 0}
+              title="Download as PDF"
+              className={`p-2.5 sm:p-2 ${theme === 'dark' ? 'hover:bg-white/5 text-zinc-400' : 'hover:bg-black/5 text-zinc-500'} rounded-xl sm:rounded-full transition-colors disabled:opacity-30 active:scale-90 flex-shrink-0`}
+            >
+              <FileDown className={`w-4 h-4 ${isGenerating ? 'animate-pulse text-emerald-500' : ''}`} />
+            </button>
 
-          <div className={`w-px h-4 ${theme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`} />
+            <button
+              onClick={() => setIsClearConfirmOpen(true)}
+              disabled={getPlainText(text).length === 0}
+              title="Clear all text"
+              className={`p-2.5 sm:p-2 ${theme === 'dark' ? 'hover:bg-red-500/10 text-zinc-400 hover:text-red-400' : 'hover:bg-red-50 text-zinc-500 hover:text-red-500'} rounded-xl sm:rounded-full transition-colors disabled:opacity-30 active:scale-90 flex-shrink-0`}
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
 
-          <button
-            onClick={toggleTheme}
-            title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-            className={`p-3 sm:p-2 ${theme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-black/5'} rounded-full transition-colors relative group active:scale-95`}
-          >
-            {theme === 'light' ? (
-              <Moon className="w-4 h-4 sm:w-4 sm:h-4 text-zinc-500 group-hover:text-zinc-900" />
-            ) : (
-              <Sun className="w-4 h-4 sm:w-4 sm:h-4 text-zinc-400 group-hover:text-zinc-100" />
-            )}
-            <span className="hidden sm:block absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] font-medium bg-zinc-900 text-white px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-              {theme === 'light' ? 'Dark' : 'Light'}
-            </span>
-          </button>
+            <button
+              onClick={toggleTheme}
+              title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+              className={`p-2.5 sm:p-2 ${theme === 'dark' ? 'hover:bg-white/5 text-zinc-400' : 'hover:bg-black/5 text-zinc-500'} rounded-xl sm:rounded-full transition-colors active:scale-90 flex-shrink-0`}
+            >
+              {theme === 'light' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+            </button>
+          </div>
         </motion.div>
       </div>
 
@@ -322,24 +397,24 @@ export default function App() {
           </div>
         </div>
 
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Write here something..."
-          className={`flex-1 w-full bg-transparent border-none outline-none resize-none text-base sm:text-lg md:text-xl leading-relaxed ${theme === 'dark' ? 'placeholder:text-zinc-800' : 'placeholder:text-zinc-300'} focus:ring-0 p-0 transition-all duration-300`}
-          spellCheck="false"
-          autoFocus
+        <div
+          ref={editorRef}
+          contentEditable
+          onInput={handleInput}
+          onPaste={handlePaste}
+          className={`flex-1 w-full bg-transparent border-none outline-none text-base sm:text-lg md:text-xl leading-relaxed ${theme === 'dark' ? 'text-zinc-200' : 'text-zinc-900'} focus:ring-0 p-0 transition-all duration-300 min-h-[50vh] relative before:content-[attr(data-placeholder)] before:absolute before:left-0 before:top-0 before:pointer-events-none ${getPlainText(text).trim() === '' ? (theme === 'dark' ? 'before:text-zinc-800' : 'before:text-zinc-300') : 'before:hidden'}`}
+          data-placeholder="Write here something..."
+          style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
         />
       </main>
 
-      {/* Footer / Word Count - Responsive */}
-      <footer className="fixed bottom-4 left-4 right-4 sm:bottom-6 sm:left-6 sm:right-6 flex justify-between items-center pointer-events-none gap-2">
-        <div className={`text-[9px] sm:text-[10px] font-medium tracking-widest uppercase ${theme === 'dark' ? 'text-zinc-400 bg-zinc-900/80 border-white/10' : 'text-zinc-500 bg-white/80 border-black/5'} backdrop-blur-sm px-3 py-1.5 rounded-full border shadow-sm`}>
-          {text.trim() === '' ? 'Empty' : `${text.trim().split(/\s+/).length} Words`}
+      {/* Footer / Word Count - Responsive - Moved to top on mobile to avoid toolbar overlap */}
+      <footer className="fixed top-4 left-4 right-4 sm:top-auto sm:bottom-6 sm:left-6 sm:right-6 flex justify-between items-center pointer-events-none gap-2 z-40">
+        <div className={`text-[9px] sm:text-[10px] font-medium tracking-widest uppercase ${theme === 'dark' ? 'text-zinc-400 bg-zinc-900/80 border-white/10' : 'text-zinc-500 bg-white/80 border-black/5'} backdrop-blur-sm px-3 py-1.5 rounded-full border shadow-sm transition-all duration-500`}>
+          {getPlainText(text).trim() === '' ? 'Empty' : `${getPlainText(text).trim().split(/\s+/).length} Words`}
         </div>
-        <div className={`text-[9px] sm:text-[10px] font-medium tracking-widest uppercase ${theme === 'dark' ? 'text-zinc-400 bg-zinc-900/80 border-white/10' : 'text-zinc-500 bg-white/80 border-black/5'} backdrop-blur-sm px-3 py-1.5 rounded-full border shadow-sm`}>
-          {text.length} Chars
+        <div className={`text-[9px] sm:text-[10px] font-medium tracking-widest uppercase ${theme === 'dark' ? 'text-zinc-400 bg-zinc-900/80 border-white/10' : 'text-zinc-500 bg-white/80 border-black/5'} backdrop-blur-sm px-3 py-1.5 rounded-full border shadow-sm transition-all duration-500`}>
+          {getPlainText(text).length} Chars
         </div>
       </footer>
 
@@ -428,8 +503,26 @@ export default function App() {
                     Export to PDF?
                   </h2>
                   <p className={`text-sm ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-500'}`}>
-                    Choose your preferred page margins before downloading.
+                    Name your document and choose margins.
                   </p>
+                </div>
+
+                {/* Filename Input */}
+                <div className="w-full flex flex-col gap-3">
+                  <label className={`text-[10px] font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    File Name
+                  </label>
+                  <input
+                    type="text"
+                    value={pdfFileName}
+                    onChange={(e) => setPdfFileName(e.target.value)}
+                    placeholder="Enter file name..."
+                    className={`w-full px-4 py-3 rounded-xl border outline-none transition-all ${
+                      theme === 'dark' 
+                        ? 'bg-zinc-800 border-white/10 text-white focus:border-emerald-500/50' 
+                        : 'bg-zinc-50 border-black/5 text-zinc-900 focus:border-emerald-500/50'
+                    }`}
+                  />
                 </div>
 
                 {/* Margin Control */}

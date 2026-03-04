@@ -23,3 +23,13 @@
     @apply bg-zinc-200 rounded-full hover:bg-zinc-300 transition-colors;
   }
 }
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
