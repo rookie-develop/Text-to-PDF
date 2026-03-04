@@ -263,11 +263,12 @@ export default function App() {
       
       // Extremely Broad Bold Detection (ChatGPT, Mobile Browsers, etc.)
       const isBold = ['b', 'strong', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag) || 
-                     /font-weight\s*:\s*(bold|600|700|800|900)/i.test(style) ||
+                     /font-weight\s*:\s*(bold|[6-9]00)/i.test(style) ||
                      el.style.fontWeight === 'bold' ||
                      (el.style.fontWeight && parseInt(el.style.fontWeight) >= 600) ||
                      el.classList.contains('bold') ||
-                     el.classList.contains('font-bold');
+                     el.classList.contains('font-bold') ||
+                     tag.startsWith('h');
       
       // Broad Italic Detection
       const isItalic = ['i', 'em'].includes(tag) || 
@@ -278,6 +279,7 @@ export default function App() {
       // Broad Underline Detection
       const isUnderline = ['u'].includes(tag) || 
                           /text-decoration\s*:\s*underline/i.test(style) ||
+                          /text-decoration-line\s*:\s*underline/i.test(style) ||
                           el.style.textDecoration.includes('underline') ||
                           el.classList.contains('underline');
 
@@ -296,6 +298,7 @@ export default function App() {
       
       // Handle line breaks and block elements
       if (['div', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr', 'article', 'section', 'header', 'footer'].includes(tag)) {
+        // Avoid double breaks
         return `<br>${result}`;
       }
       
@@ -303,7 +306,12 @@ export default function App() {
     };
 
     const sanitized = Array.from(doc.body.childNodes).map(clean).join('');
-    return sanitized.replace(/^(<br>)+/, '').replace(/(<br>)+$/, '');
+    // Clean up multiple consecutive breaks and normalize
+    return sanitized
+      .replace(/(<br>){3,}/g, '<br><br>')
+      .replace(/^(<br>)+/, '')
+      .replace(/(<br>)+$/, '')
+      .replace(/&nbsp;/g, ' ');
   }, []);
 
   // Handle Paste from Clipboard
@@ -390,21 +398,29 @@ export default function App() {
       const { default: html2pdf } = await import('html2pdf.js');
 
       const wordCount = plainText.trim().split(/\s+/).length;
-      let scale = 2.0;
-      if (wordCount > 10000) scale = 1.0;
-      else if (wordCount > 5000) scale = 1.5;
+      let scale = 2.5; // Optimized scale for quality vs performance
+      if (wordCount > 10000) scale = 1.2;
+      else if (wordCount > 5000) scale = 1.8;
 
       const opt = {
         margin: [pdfMargin, pdfMargin, pdfMargin, pdfMargin] as [number, number, number, number],
         filename: `${pdfFileName || 'zenwriter-document'}.pdf`,
-        image: { type: 'jpeg' as const, quality: 0.98 },
+        image: { type: 'jpeg' as const, quality: 1.0 },
         html2canvas: { 
           scale: scale,
           useCORS: true,
+          letterRendering: true,
           logging: false,
-          backgroundColor: '#ffffff'
+          backgroundColor: '#ffffff',
+          scrollY: 0,
+          windowWidth: 1200 // Fixed width for consistent rendering
         },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const, compress: true },
+        jsPDF: { 
+          unit: 'pt' as const, // Points are more precise for text
+          format: 'a4' as const, 
+          orientation: 'portrait' as const,
+          compress: true
+        },
         pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
       };
 
@@ -417,22 +433,25 @@ export default function App() {
           padding: 0;
           margin: 0;
           background-color: #fff;
+          line-height: 1.5;
         ">
           <style>
             b, strong { font-weight: bold !important; }
             i, em { font-style: italic !important; }
             u { text-decoration: underline !important; }
-            p, div { margin-bottom: 1em; }
-            br { content: ""; display: block; margin-bottom: 0.5em; }
+            p, div { margin-bottom: 0.6em; page-break-inside: avoid; }
+            br { content: ""; display: block; margin-bottom: 0.3em; }
+            span { page-break-inside: avoid; }
+            * { box-sizing: border-box; }
           </style>
-          <div style="border-bottom: 1px solid #f0f0f0; padding-bottom: 12px; margin-bottom: 40px; display: flex; justify-content: space-between; font-size: 8pt; color: #a0a0a0; text-transform: uppercase; letter-spacing: 0.1em;">
+          <div style="border-bottom: 1px solid #f0f0f0; padding-bottom: 10px; margin-bottom: 25px; display: flex; justify-content: space-between; font-size: 8pt; color: #a0a0a0; text-transform: uppercase; letter-spacing: 0.1em;">
             <span>${pdfFileName || 'ZenWriter Document'}</span>
             <span>${new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</span>
           </div>
-          <div style="white-space: pre-wrap; word-wrap: break-word;">
+          <div style="white-space: pre-wrap; word-wrap: break-word; text-align: left; width: 100%;">
             ${text}
           </div>
-          <div style="margin-top: 60px; border-top: 1px solid #f0f0f0; padding-top: 20px; text-align: center; font-size: 7pt; color: #d0d0d0; letter-spacing: 0.05em;">
+          <div style="margin-top: 40px; border-top: 1px solid #f0f0f0; padding-top: 15px; text-align: center; font-size: 7pt; color: #d0d0d0; letter-spacing: 0.05em;">
             Handcrafted in ZenWriter
           </div>
         </div>
