@@ -38,7 +38,7 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
   const [isExportConfirmOpen, setIsExportConfirmOpen] = useState(false);
-  const [pdfMargin, setPdfMargin] = useState<number>(20);
+  const [pdfMargin, setPdfMargin] = useState<number>(40);
   const [pdfFileName, setPdfFileName] = useState<string>(() => {
     return `zenwriter-${new Date().toISOString().slice(0, 10)}`;
   });
@@ -403,7 +403,7 @@ export default function App() {
       else if (wordCount > 5000) scale = 1.8;
 
       const opt = {
-        margin: [pdfMargin, pdfMargin, pdfMargin, pdfMargin] as [number, number, number, number],
+        margin: [pdfMargin, pdfMargin, pdfMargin + 20, pdfMargin] as [number, number, number, number],
         filename: `${pdfFileName || 'zenwriter-document'}.pdf`,
         image: { type: 'jpeg' as const, quality: 1.0 },
         html2canvas: { 
@@ -430,7 +430,7 @@ export default function App() {
           font-size: 11pt;
           color: #1a1a1a;
           width: 100%;
-          padding: 0;
+          padding: 0 0 40pt 0;
           margin: 0;
           background-color: #fff;
           line-height: 1.5;
@@ -779,9 +779,9 @@ export default function App() {
                   </label>
                   <div className={`flex p-1 rounded-xl ${theme === 'dark' ? 'bg-zinc-800' : 'bg-zinc-100'}`}>
                     {[
-                      { label: 'Narrow', value: 10 },
-                      { label: 'Normal', value: 20 },
-                      { label: 'Wide', value: 30 }
+                      { label: 'Narrow', value: 30 },
+                      { label: 'Normal', value: 50 },
+                      { label: 'Wide', value: 72 }
                     ].map((m) => (
                       <button
                         key={m.value}
