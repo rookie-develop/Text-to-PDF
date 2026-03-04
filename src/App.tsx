@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Copy, FileDown, Check, Sun, Moon, Trash2, AlertTriangle, ClipboardPaste } from 'lucide-react';
+import { Copy, FileDown, Check, Sun, Moon, Trash2, AlertTriangle, ClipboardPaste, AlignLeft, AlignCenter, AlignRight, AlignJustify } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Debounce helper for performance
@@ -52,7 +52,11 @@ export default function App() {
   const [formatState, setFormatState] = useState({
     bold: false,
     italic: false,
-    underline: false
+    underline: false,
+    alignLeft: false,
+    alignCenter: false,
+    alignRight: false,
+    alignJustify: false
   });
   const editorRef = useRef<HTMLDivElement>(null);
   const lastSelection = useRef<Range | null>(null);
@@ -62,7 +66,11 @@ export default function App() {
     setFormatState({
       bold: document.queryCommandState('bold'),
       italic: document.queryCommandState('italic'),
-      underline: document.queryCommandState('underline')
+      underline: document.queryCommandState('underline'),
+      alignLeft: document.queryCommandState('justifyLeft'),
+      alignCenter: document.queryCommandState('justifyCenter'),
+      alignRight: document.queryCommandState('justifyRight'),
+      alignJustify: document.queryCommandState('justifyFull')
     });
 
     // Save selection for manual paste button
@@ -115,11 +123,42 @@ export default function App() {
     setText(e.currentTarget.innerHTML);
   };
 
-  const execCommand = (command: string) => {
-    document.execCommand(command, false);
-    updateFormatState();
+  const execCommand = (command: string, value: string | undefined = undefined) => {
+    // Restore selection if lost (critical for mobile)
+    if (lastSelection.current) {
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(lastSelection.current);
+    }
+
     if (editorRef.current) {
       editorRef.current.focus();
+    }
+
+    const success = document.execCommand(command, false, value);
+    
+    // Fallback for Bold/Italic/Underline if execCommand fails on some mobile browsers
+    if (!success && ['bold', 'italic', 'underline'].includes(command)) {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        if (!range.collapsed) {
+          const tag = command === 'bold' ? 'b' : command === 'italic' ? 'i' : 'u';
+          const wrapper = document.createElement(tag);
+          try {
+            range.surroundContents(wrapper);
+          } catch (e) {
+            // If surroundContents fails (e.g. selection crosses nodes), use a more complex approach
+            const content = range.extractContents();
+            wrapper.appendChild(content);
+            range.insertNode(wrapper);
+          }
+        }
+      }
+    }
+
+    updateFormatState();
+    if (editorRef.current) {
       // Sync state immediately so formatting reflects in PDF and auto-save
       setText(editorRef.current.innerHTML);
     }
@@ -242,9 +281,18 @@ export default function App() {
                           el.style.textDecoration.includes('underline') ||
                           el.classList.contains('underline');
 
+      // Preserve Line Height if present
+      const lineHeightMatch = style.match(/line-height\s*:\s*([^;]+)/i);
+      const preservedLineHeight = lineHeightMatch ? lineHeightMatch[1] : '';
+
       if (isBold) result = `<b>${result}</b>`;
       if (isItalic) result = `<i>${result}</i>`;
       if (isUnderline) result = `<u>${result}</u>`;
+      
+      // Wrap in span if line height needs to be preserved
+      if (preservedLineHeight) {
+        result = `<span style="line-height: ${preservedLineHeight}">${result}</span>`;
+      }
       
       // Handle line breaks and block elements
       if (['div', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr', 'article', 'section', 'header', 'footer'].includes(tag)) {
@@ -364,7 +412,6 @@ export default function App() {
         <div style="
           font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
           font-size: 11pt;
-          line-height: 1.8;
           color: #1a1a1a;
           width: 100%;
           padding: 0;
@@ -382,7 +429,7 @@ export default function App() {
             <span>${pdfFileName || 'ZenWriter Document'}</span>
             <span>${new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</span>
           </div>
-          <div style="text-align: left; white-space: pre-wrap; word-wrap: break-word;">
+          <div style="white-space: pre-wrap; word-wrap: break-word;">
             ${text}
           </div>
           <div style="margin-top: 60px; border-top: 1px solid #f0f0f0; padding-top: 20px; text-align: center; font-size: 7pt; color: #d0d0d0; letter-spacing: 0.05em;">
@@ -408,7 +455,7 @@ export default function App() {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className={`flex items-center justify-between sm:justify-start gap-1 sm:gap-1.5 ${theme === 'dark' ? 'bg-zinc-900/95 border-white/10' : 'bg-white/95 border-black/10'} backdrop-blur-xl border shadow-2xl rounded-2xl sm:rounded-full px-2 py-2 sm:px-3 sm:py-2 overflow-hidden`}
+          className={`flex items-center justify-start gap-1 sm:gap-1.5 ${theme === 'dark' ? 'bg-zinc-900/95 border-white/10' : 'bg-white/95 border-black/10'} backdrop-blur-xl border shadow-2xl rounded-2xl sm:rounded-full px-2 py-2 sm:px-3 sm:py-2 overflow-x-auto no-scrollbar`}
         >
           <div className="flex items-center gap-0.5 sm:gap-1">
             <button
@@ -478,6 +525,55 @@ export default function App() {
 
           <div className="flex items-center gap-0.5 sm:gap-1">
             <button
+              onClick={() => execCommand('justifyLeft')}
+              className={`p-2.5 sm:p-2 rounded-xl sm:rounded-full transition-all active:scale-90 flex-shrink-0 ${
+                formatState.alignLeft 
+                  ? (theme === 'dark' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
+                  : (theme === 'dark' ? 'hover:bg-white/5 text-zinc-300' : 'hover:bg-black/5 text-zinc-800')
+              }`}
+              title="Align Left"
+            >
+              <AlignLeft className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => execCommand('justifyCenter')}
+              className={`p-2.5 sm:p-2 rounded-xl sm:rounded-full transition-all active:scale-90 flex-shrink-0 ${
+                formatState.alignCenter 
+                  ? (theme === 'dark' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
+                  : (theme === 'dark' ? 'hover:bg-white/5 text-zinc-300' : 'hover:bg-black/5 text-zinc-800')
+              }`}
+              title="Align Center"
+            >
+              <AlignCenter className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => execCommand('justifyRight')}
+              className={`p-2.5 sm:p-2 rounded-xl sm:rounded-full transition-all active:scale-90 flex-shrink-0 ${
+                formatState.alignRight 
+                  ? (theme === 'dark' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
+                  : (theme === 'dark' ? 'hover:bg-white/5 text-zinc-300' : 'hover:bg-black/5 text-zinc-800')
+              }`}
+              title="Align Right"
+            >
+              <AlignRight className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => execCommand('justifyFull')}
+              className={`p-2.5 sm:p-2 rounded-xl sm:rounded-full transition-all active:scale-90 flex-shrink-0 ${
+                formatState.alignJustify 
+                  ? (theme === 'dark' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
+                  : (theme === 'dark' ? 'hover:bg-white/5 text-zinc-300' : 'hover:bg-black/5 text-zinc-800')
+              }`}
+              title="Justify"
+            >
+              <AlignJustify className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-white/10' : 'bg-black/10'} flex-shrink-0`} />
+
+          <div className="flex items-center gap-0.5 sm:gap-1">
+            <button
               onClick={() => setIsExportConfirmOpen(true)}
               disabled={isGenerating || getPlainText(text).length === 0}
               title="Download as PDF"
@@ -536,7 +632,7 @@ export default function App() {
           onPaste={handlePaste}
           className={`flex-1 w-full bg-transparent border-none outline-none text-base sm:text-lg md:text-xl leading-relaxed ${theme === 'dark' ? 'text-zinc-200' : 'text-zinc-900'} focus:ring-0 p-0 transition-all duration-300 min-h-[50vh] relative before:content-[attr(data-placeholder)] before:absolute before:left-0 before:top-0 before:pointer-events-none ${getPlainText(text).trim() === '' ? (theme === 'dark' ? 'before:text-zinc-800' : 'before:text-zinc-300') : 'before:hidden'}`}
           data-placeholder="Write here something..."
-          style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+          style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', textAlign: 'left' }}
         />
       </main>
 
