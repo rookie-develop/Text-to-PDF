@@ -80,11 +80,16 @@ export default function App() {
     return () => document.removeEventListener('selectionchange', handleSelectionChange);
   }, [updateFormatState]);
 
-  // Helper to strip HTML for word count
+  // Helper to strip HTML for word count with better word separation
   const getPlainText = (html: string) => {
     const tmp = document.createElement('div');
     tmp.innerHTML = html;
-    return tmp.textContent || tmp.innerText || '';
+    // Add spaces before block elements to prevent words from sticking together
+    const blocks = tmp.querySelectorAll('div, p, br, h1, h2, h3, h4, h5, h6, li');
+    blocks.forEach(b => {
+      b.insertAdjacentText('beforebegin', ' ');
+    });
+    return (tmp.textContent || tmp.innerText || '').replace(/\s+/g, ' ').trim();
   };
 
   // Debounced text for auto-save to reduce CPU load
@@ -161,70 +166,8 @@ export default function App() {
     }
   }, [text]);
 
-  // Handle Paste from Clipboard
-  const handlePaste = useCallback(async (e?: React.ClipboardEvent) => {
-    // If it's a manual paste button click
-    if (!e) {
-      try {
-        // Restore selection if lost
-        if (lastSelection.current) {
-          const sel = window.getSelection();
-          sel?.removeAllRanges();
-          sel?.addRange(lastSelection.current);
-        }
-
-        window.focus();
-        if (editorRef.current) editorRef.current.focus();
-
-        // Try to use the newer Clipboard API to read rich text if possible
-        if (navigator.clipboard && navigator.clipboard.read) {
-          try {
-            const items = await navigator.clipboard.read();
-            for (const item of items) {
-              if (item.types.includes('text/html')) {
-                const blob = await item.getType('text/html');
-                const html = await blob.text();
-                processHtmlPaste(html);
-                setIsPasted(true);
-                setTimeout(() => setIsPasted(false), 2000);
-                return;
-              }
-            }
-          } catch (readErr) {
-            console.warn('Clipboard read failed, falling back to readText');
-          }
-        }
-        
-        // Fallback to plain text
-        const clipboardText = await navigator.clipboard.readText();
-        if (clipboardText) {
-          const escaped = clipboardText.replace(/\n/g, '<br>');
-          insertAtCursor(escaped);
-          setIsPasted(true);
-          setTimeout(() => setIsPasted(false), 2000);
-        }
-      } catch (err: any) {
-        setPasteError('Use Ctrl+V');
-        setTimeout(() => setPasteError(null), 3000);
-      }
-      return;
-    }
-
-    // If it's a native paste event
-    e.preventDefault();
-    const html = e.clipboardData.getData('text/html');
-    const plain = e.clipboardData.getData('text/plain');
-
-    if (html) {
-      processHtmlPaste(html);
-    } else if (plain) {
-      const escaped = plain.replace(/\n/g, '<br>');
-      insertAtCursor(escaped);
-    }
-  }, []);
-
   // Robust insertion method for mobile/desktop
-  const insertAtCursor = (html: string) => {
+  const insertAtCursor = useCallback((html: string) => {
     if (editorRef.current) {
       editorRef.current.focus();
     }
@@ -257,10 +200,10 @@ export default function App() {
     if (editorRef.current) {
       setText(editorRef.current.innerHTML);
     }
-  };
+  }, []);
 
   // Helper to process and sanitize HTML paste while preserving B/I/U
-  const processHtmlPaste = (html: string) => {
+  const sanitizeHtmlForPaste = useCallback((html: string) => {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
     
@@ -281,7 +224,7 @@ export default function App() {
       const isBold = ['b', 'strong', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag) || 
                      /font-weight\s*:\s*(bold|600|700|800|900)/i.test(style) ||
                      el.style.fontWeight === 'bold' ||
-                     parseInt(el.style.fontWeight) >= 600 ||
+                     (el.style.fontWeight && parseInt(el.style.fontWeight) >= 600) ||
                      el.classList.contains('bold') ||
                      el.classList.contains('font-bold');
       
@@ -310,10 +253,81 @@ export default function App() {
     };
 
     const sanitized = Array.from(doc.body.childNodes).map(clean).join('');
-    const finalHtml = sanitized.replace(/^(<br>)+/, '').replace(/(<br>)+$/, '');
-    
-    insertAtCursor(finalHtml);
-  };
+    return sanitized.replace(/^(<br>)+/, '').replace(/(<br>)+$/, '');
+  }, []);
+
+  // Handle Paste from Clipboard
+  const handlePaste = useCallback(async (e?: React.ClipboardEvent) => {
+    // If it's a manual paste button click
+    if (!e) {
+      try {
+        // Restore selection if lost
+        if (lastSelection.current) {
+          const sel = window.getSelection();
+          sel?.removeAllRanges();
+          sel?.addRange(lastSelection.current);
+        }
+
+        window.focus();
+        if (editorRef.current) editorRef.current.focus();
+
+        // Try to use the newer Clipboard API to read rich text if possible
+        if (navigator.clipboard && navigator.clipboard.read) {
+          try {
+            const items = await navigator.clipboard.read();
+            for (const item of items) {
+              if (item.types.includes('text/html')) {
+                const blob = await item.getType('text/html');
+                const html = await blob.text();
+                const sanitized = sanitizeHtmlForPaste(html);
+                insertAtCursor(sanitized);
+                setIsPasted(true);
+                setTimeout(() => setIsPasted(false), 2000);
+                return;
+              }
+            }
+          } catch (readErr) {
+            console.warn('Clipboard read failed, falling back to readText');
+          }
+        }
+        
+        // Fallback to plain text
+        const clipboardText = await navigator.clipboard.readText();
+        if (clipboardText) {
+          const escaped = clipboardText.replace(/\n/g, '<br>');
+          insertAtCursor(escaped);
+          setIsPasted(true);
+          setTimeout(() => setIsPasted(false), 2000);
+        }
+      } catch (err: any) {
+        setPasteError('Long-press to paste');
+        setTimeout(() => setPasteError(null), 3000);
+      }
+      return;
+    }
+
+    // If it's a native paste event
+    const html = e.clipboardData.getData('text/html');
+    const plain = e.clipboardData.getData('text/plain');
+
+    // CRITICAL FIX FOR MOBILE: If HTML is available, we handle it.
+    // If NOT available (common on mobile context menu), we let the browser do its default paste
+    // which usually preserves formatting better than plain text fallback.
+    if (html) {
+      e.preventDefault();
+      const sanitized = sanitizeHtmlForPaste(html);
+      insertAtCursor(sanitized);
+    } else {
+      // Let the browser handle the paste natively.
+      // This is the most reliable way on mobile browsers to preserve formatting
+      // when the JS API is restricted.
+      setTimeout(() => {
+        if (editorRef.current) {
+          setText(editorRef.current.innerHTML);
+        }
+      }, 0);
+    }
+  }, [insertAtCursor, sanitizeHtmlForPaste, text]);
 
   // Handle PDF Generation (Dynamic Import for performance)
   const handleDownloadPDF = useCallback(async () => {
