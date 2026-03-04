@@ -160,9 +160,22 @@ export default function App() {
     if (!e) {
       try {
         window.focus();
-        if (!navigator.clipboard || !navigator.clipboard.readText) {
-          throw new Error('Clipboard API not supported');
+        // Try to use the newer Clipboard API to read rich text if possible
+        if (navigator.clipboard && navigator.clipboard.read) {
+          const items = await navigator.clipboard.read();
+          for (const item of items) {
+            if (item.types.includes('text/html')) {
+              const blob = await item.getType('text/html');
+              const html = await blob.text();
+              processHtmlPaste(html);
+              setIsPasted(true);
+              setTimeout(() => setIsPasted(false), 2000);
+              return;
+            }
+          }
         }
+        
+        // Fallback to plain text if HTML not found or API not supported
         const clipboardText = await navigator.clipboard.readText();
         if (clipboardText) {
           const escaped = clipboardText.replace(/\n/g, '<br>');
@@ -183,28 +196,63 @@ export default function App() {
     const plain = e.clipboardData.getData('text/plain');
 
     if (html) {
-      // Basic sanitization: keep only b, i, u, div, p, br
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, 'text/html');
-      const clean = (node: Node): string => {
-        if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
-        if (node.nodeType !== Node.ELEMENT_NODE) return '';
-        const el = node as HTMLElement;
-        const tag = el.tagName.toLowerCase();
-        const children = Array.from(el.childNodes).map(clean).join('');
-        if (['b', 'strong'].includes(tag)) return `<b>${children}</b>`;
-        if (['i', 'em'].includes(tag)) return `<i>${children}</i>`;
-        if (['u'].includes(tag)) return `<u>${children}</u>`;
-        if (['div', 'p', 'br'].includes(tag)) return `<br>${children}`;
-        return children;
-      };
-      const sanitized = Array.from(doc.body.childNodes).map(clean).join('');
-      document.execCommand('insertHTML', false, sanitized);
+      processHtmlPaste(html);
     } else {
       const escaped = plain.replace(/\n/g, '<br>');
       document.execCommand('insertHTML', false, escaped);
     }
   }, []);
+
+  // Helper to process and sanitize HTML paste while preserving B/I/U
+  const processHtmlPaste = (html: string) => {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    
+    const clean = (node: Node): string => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        // Escape HTML special characters in text nodes
+        return node.textContent?.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') || '';
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return '';
+      
+      const el = node as HTMLElement;
+      const tag = el.tagName.toLowerCase();
+      const style = el.getAttribute('style') || '';
+      const children = Array.from(el.childNodes).map(clean).join('');
+      
+      let result = children;
+      
+      // Enhanced Bold Detection (Tags, Styles, Headers)
+      const isBold = ['b', 'strong', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag) || 
+                     /font-weight\s*:\s*(bold|[6-9]00)/i.test(style);
+      
+      // Enhanced Italic Detection
+      const isItalic = ['i', 'em'].includes(tag) || /font-style\s*:\s*italic/i.test(style);
+      
+      // Enhanced Underline Detection
+      const isUnderline = ['u'].includes(tag) || /text-decoration\s*:\s*underline/i.test(style);
+
+      if (isBold) result = `<b>${result}</b>`;
+      if (isItalic) result = `<i>${result}</i>`;
+      if (isUnderline) result = `<u>${result}</u>`;
+      
+      // Handle line breaks and block elements
+      if (['div', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr', 'article', 'section'].includes(tag)) {
+        return `<br>${result}`;
+      }
+      
+      return result;
+    };
+
+    const sanitized = Array.from(doc.body.childNodes).map(clean).join('');
+    // Normalize line breaks and remove leading/trailing ones
+    const finalHtml = sanitized.replace(/^(<br>)+/, '').replace(/(<br>)+$/, '');
+    
+    if (editorRef.current) {
+      editorRef.current.focus();
+    }
+    document.execCommand('insertHTML', false, finalHtml);
+  };
 
   // Handle PDF Generation (Dynamic Import for performance)
   const handleDownloadPDF = useCallback(async () => {
