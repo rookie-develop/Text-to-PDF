@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Copy, FileDown, Check, Sun, Moon, Trash2, AlertTriangle, ClipboardPaste, AlignLeft, AlignCenter, AlignRight, AlignJustify } from 'lucide-react';
+import { Copy, FileDown, Check, Sun, Moon, Trash2, AlertTriangle, ClipboardPaste } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Debounce helper for performance
@@ -38,7 +38,7 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
   const [isExportConfirmOpen, setIsExportConfirmOpen] = useState(false);
-  const [pdfMargin, setPdfMargin] = useState<number>(40);
+  const [pdfMargin, setPdfMargin] = useState<number>(20);
   const [pdfFileName, setPdfFileName] = useState<string>(() => {
     return `zenwriter-${new Date().toISOString().slice(0, 10)}`;
   });
@@ -52,32 +52,17 @@ export default function App() {
   const [formatState, setFormatState] = useState({
     bold: false,
     italic: false,
-    underline: false,
-    alignLeft: false,
-    alignCenter: false,
-    alignRight: false,
-    alignJustify: false
+    underline: false
   });
   const editorRef = useRef<HTMLDivElement>(null);
-  const lastSelection = useRef<Range | null>(null);
 
   // Update formatting state based on selection
   const updateFormatState = useCallback(() => {
     setFormatState({
       bold: document.queryCommandState('bold'),
       italic: document.queryCommandState('italic'),
-      underline: document.queryCommandState('underline'),
-      alignLeft: document.queryCommandState('justifyLeft'),
-      alignCenter: document.queryCommandState('justifyCenter'),
-      alignRight: document.queryCommandState('justifyRight'),
-      alignJustify: document.queryCommandState('justifyFull')
+      underline: document.queryCommandState('underline')
     });
-
-    // Save selection for manual paste button
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.anchorNode)) {
-      lastSelection.current = sel.getRangeAt(0).cloneRange();
-    }
   }, []);
 
   useEffect(() => {
@@ -88,16 +73,11 @@ export default function App() {
     return () => document.removeEventListener('selectionchange', handleSelectionChange);
   }, [updateFormatState]);
 
-  // Helper to strip HTML for word count with better word separation
+  // Helper to strip HTML for word count
   const getPlainText = (html: string) => {
     const tmp = document.createElement('div');
     tmp.innerHTML = html;
-    // Add spaces before block elements to prevent words from sticking together
-    const blocks = tmp.querySelectorAll('div, p, br, h1, h2, h3, h4, h5, h6, li');
-    blocks.forEach(b => {
-      b.insertAdjacentText('beforebegin', ' ');
-    });
-    return (tmp.textContent || tmp.innerText || '').replace(/\s+/g, ' ').trim();
+    return tmp.textContent || tmp.innerText || '';
   };
 
   // Debounced text for auto-save to reduce CPU load
@@ -123,44 +103,11 @@ export default function App() {
     setText(e.currentTarget.innerHTML);
   };
 
-  const execCommand = (command: string, value: string | undefined = undefined) => {
-    // Restore selection if lost (critical for mobile)
-    if (lastSelection.current) {
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(lastSelection.current);
-    }
-
-    if (editorRef.current) {
-      editorRef.current.focus();
-    }
-
-    const success = document.execCommand(command, false, value);
-    
-    // Fallback for Bold/Italic/Underline if execCommand fails on some mobile browsers
-    if (!success && ['bold', 'italic', 'underline'].includes(command)) {
-      const sel = window.getSelection();
-      if (sel && sel.rangeCount > 0) {
-        const range = sel.getRangeAt(0);
-        if (!range.collapsed) {
-          const tag = command === 'bold' ? 'b' : command === 'italic' ? 'i' : 'u';
-          const wrapper = document.createElement(tag);
-          try {
-            range.surroundContents(wrapper);
-          } catch (e) {
-            // If surroundContents fails (e.g. selection crosses nodes), use a more complex approach
-            const content = range.extractContents();
-            wrapper.appendChild(content);
-            range.insertNode(wrapper);
-          }
-        }
-      }
-    }
-
+  const execCommand = (command: string) => {
+    document.execCommand(command, false);
     updateFormatState();
     if (editorRef.current) {
-      // Sync state immediately so formatting reflects in PDF and auto-save
-      setText(editorRef.current.innerHTML);
+      editorRef.current.focus();
     }
   };
 
@@ -207,185 +154,57 @@ export default function App() {
     }
   }, [text]);
 
-  // Robust insertion method for mobile/desktop
-  const insertAtCursor = useCallback((html: string) => {
-    if (editorRef.current) {
-      editorRef.current.focus();
-    }
-    
-    // Try execCommand first for undo history
-    const success = document.execCommand('insertHTML', false, html);
-    
-    // Fallback for browsers where execCommand might fail or behave oddly
-    if (!success) {
-      const sel = window.getSelection();
-      if (sel && sel.rangeCount > 0) {
-        const range = sel.getRangeAt(0);
-        range.deleteContents();
-        const el = document.createElement('div');
-        el.innerHTML = html;
-        const frag = document.createDocumentFragment();
-        let node;
-        while ((node = el.firstChild)) {
-          frag.appendChild(node);
-        }
-        range.insertNode(frag);
-        // Move cursor to end
-        range.collapse(false);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
-    }
-    
-    // Always sync state
-    if (editorRef.current) {
-      setText(editorRef.current.innerHTML);
-    }
-  }, []);
-
-  // Helper to process and sanitize HTML paste while preserving B/I/U
-  const sanitizeHtmlForPaste = useCallback((html: string) => {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-    
-    const clean = (node: Node): string => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        return node.textContent?.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') || '';
-      }
-      if (node.nodeType !== Node.ELEMENT_NODE) return '';
-      
-      const el = node as HTMLElement;
-      const tag = el.tagName.toLowerCase();
-      const style = el.getAttribute('style') || '';
-      const children = Array.from(el.childNodes).map(clean).join('');
-      
-      let result = children;
-      
-      // Extremely Broad Bold Detection (ChatGPT, Mobile Browsers, etc.)
-      const isBold = ['b', 'strong', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag) || 
-                     /font-weight\s*:\s*(bold|[6-9]00)/i.test(style) ||
-                     el.style.fontWeight === 'bold' ||
-                     (el.style.fontWeight && parseInt(el.style.fontWeight) >= 600) ||
-                     el.classList.contains('bold') ||
-                     el.classList.contains('font-bold') ||
-                     tag.startsWith('h');
-      
-      // Broad Italic Detection
-      const isItalic = ['i', 'em'].includes(tag) || 
-                       /font-style\s*:\s*italic/i.test(style) ||
-                       el.style.fontStyle === 'italic' ||
-                       el.classList.contains('italic');
-      
-      // Broad Underline Detection
-      const isUnderline = ['u'].includes(tag) || 
-                          /text-decoration\s*:\s*underline/i.test(style) ||
-                          /text-decoration-line\s*:\s*underline/i.test(style) ||
-                          el.style.textDecoration.includes('underline') ||
-                          el.classList.contains('underline');
-
-      // Preserve Line Height if present
-      const lineHeightMatch = style.match(/line-height\s*:\s*([^;]+)/i);
-      const preservedLineHeight = lineHeightMatch ? lineHeightMatch[1] : '';
-
-      if (isBold) result = `<b>${result}</b>`;
-      if (isItalic) result = `<i>${result}</i>`;
-      if (isUnderline) result = `<u>${result}</u>`;
-      
-      // Wrap in span if line height needs to be preserved
-      if (preservedLineHeight) {
-        result = `<span style="line-height: ${preservedLineHeight}">${result}</span>`;
-      }
-      
-      // Handle line breaks and block elements
-      if (['div', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr', 'article', 'section', 'header', 'footer'].includes(tag)) {
-        // Avoid double breaks
-        return `<br>${result}`;
-      }
-      
-      return result;
-    };
-
-    const sanitized = Array.from(doc.body.childNodes).map(clean).join('');
-    // Clean up multiple consecutive breaks and normalize
-    return sanitized
-      .replace(/(<br>){3,}/g, '<br><br>')
-      .replace(/^(<br>)+/, '')
-      .replace(/(<br>)+$/, '')
-      .replace(/&nbsp;/g, ' ');
-  }, []);
-
   // Handle Paste from Clipboard
   const handlePaste = useCallback(async (e?: React.ClipboardEvent) => {
     // If it's a manual paste button click
     if (!e) {
       try {
-        // Restore selection if lost
-        if (lastSelection.current) {
-          const sel = window.getSelection();
-          sel?.removeAllRanges();
-          sel?.addRange(lastSelection.current);
-        }
-
         window.focus();
-        if (editorRef.current) editorRef.current.focus();
-
-        // Try to use the newer Clipboard API to read rich text if possible
-        if (navigator.clipboard && navigator.clipboard.read) {
-          try {
-            const items = await navigator.clipboard.read();
-            for (const item of items) {
-              if (item.types.includes('text/html')) {
-                const blob = await item.getType('text/html');
-                const html = await blob.text();
-                const sanitized = sanitizeHtmlForPaste(html);
-                insertAtCursor(sanitized);
-                setIsPasted(true);
-                setTimeout(() => setIsPasted(false), 2000);
-                return;
-              }
-            }
-          } catch (readErr) {
-            console.warn('Clipboard read failed, falling back to readText');
-          }
+        if (!navigator.clipboard || !navigator.clipboard.readText) {
+          throw new Error('Clipboard API not supported');
         }
-        
-        // Fallback to plain text
         const clipboardText = await navigator.clipboard.readText();
         if (clipboardText) {
           const escaped = clipboardText.replace(/\n/g, '<br>');
-          insertAtCursor(escaped);
+          document.execCommand('insertHTML', false, escaped);
           setIsPasted(true);
           setTimeout(() => setIsPasted(false), 2000);
         }
       } catch (err: any) {
-        setPasteError('Long-press to paste');
+        setPasteError('Use Ctrl+V');
         setTimeout(() => setPasteError(null), 3000);
       }
       return;
     }
 
     // If it's a native paste event
+    e.preventDefault();
     const html = e.clipboardData.getData('text/html');
     const plain = e.clipboardData.getData('text/plain');
 
-    // CRITICAL FIX FOR MOBILE: If HTML is available, we handle it.
-    // If NOT available (common on mobile context menu), we let the browser do its default paste
-    // which usually preserves formatting better than plain text fallback.
     if (html) {
-      e.preventDefault();
-      const sanitized = sanitizeHtmlForPaste(html);
-      insertAtCursor(sanitized);
+      // Basic sanitization: keep only b, i, u, div, p, br
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const clean = (node: Node): string => {
+        if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+        const el = node as HTMLElement;
+        const tag = el.tagName.toLowerCase();
+        const children = Array.from(el.childNodes).map(clean).join('');
+        if (['b', 'strong'].includes(tag)) return `<b>${children}</b>`;
+        if (['i', 'em'].includes(tag)) return `<i>${children}</i>`;
+        if (['u'].includes(tag)) return `<u>${children}</u>`;
+        if (['div', 'p', 'br'].includes(tag)) return `<br>${children}`;
+        return children;
+      };
+      const sanitized = Array.from(doc.body.childNodes).map(clean).join('');
+      document.execCommand('insertHTML', false, sanitized);
     } else {
-      // Let the browser handle the paste natively.
-      // This is the most reliable way on mobile browsers to preserve formatting
-      // when the JS API is restricted.
-      setTimeout(() => {
-        if (editorRef.current) {
-          setText(editorRef.current.innerHTML);
-        }
-      }, 0);
+      const escaped = plain.replace(/\n/g, '<br>');
+      document.execCommand('insertHTML', false, escaped);
     }
-  }, [insertAtCursor, sanitizeHtmlForPaste, text]);
+  }, []);
 
   // Handle PDF Generation (Dynamic Import for performance)
   const handleDownloadPDF = useCallback(async () => {
@@ -398,61 +217,44 @@ export default function App() {
       const { default: html2pdf } = await import('html2pdf.js');
 
       const wordCount = plainText.trim().split(/\s+/).length;
-      let scale = 2.5; // Optimized scale for quality vs performance
-      if (wordCount > 10000) scale = 1.2;
-      else if (wordCount > 5000) scale = 1.8;
+      let scale = 2.0;
+      if (wordCount > 10000) scale = 1.0;
+      else if (wordCount > 5000) scale = 1.5;
 
       const opt = {
-        margin: [pdfMargin, pdfMargin, pdfMargin + 20, pdfMargin] as [number, number, number, number],
+        margin: [pdfMargin, pdfMargin, pdfMargin, pdfMargin] as [number, number, number, number],
         filename: `${pdfFileName || 'zenwriter-document'}.pdf`,
-        image: { type: 'jpeg' as const, quality: 1.0 },
+        image: { type: 'jpeg' as const, quality: 0.98 },
         html2canvas: { 
           scale: scale,
           useCORS: true,
-          letterRendering: true,
           logging: false,
-          backgroundColor: '#ffffff',
-          scrollY: 0,
-          windowWidth: 1200 // Fixed width for consistent rendering
+          backgroundColor: '#ffffff'
         },
-        jsPDF: { 
-          unit: 'pt' as const, // Points are more precise for text
-          format: 'a4' as const, 
-          orientation: 'portrait' as const,
-          compress: true
-        },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const, compress: true },
         pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
       };
 
       const pdfContent = `
         <div style="
-          font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-          font-size: 11pt;
-          color: #1a1a1a;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+          font-size: 12pt;
+          line-height: 1.6;
+          color: #000;
           width: 100%;
-          padding: 0 0 40pt 0;
+          padding: 0;
           margin: 0;
           background-color: #fff;
-          line-height: 1.5;
         ">
-          <style>
-            b, strong { font-weight: bold !important; }
-            i, em { font-style: italic !important; }
-            u { text-decoration: underline !important; }
-            p, div { margin-bottom: 0.6em; page-break-inside: avoid; }
-            br { content: ""; display: block; margin-bottom: 0.3em; }
-            span { page-break-inside: avoid; }
-            * { box-sizing: border-box; }
-          </style>
-          <div style="border-bottom: 1px solid #f0f0f0; padding-bottom: 10px; margin-bottom: 25px; display: flex; justify-content: space-between; font-size: 8pt; color: #a0a0a0; text-transform: uppercase; letter-spacing: 0.1em;">
-            <span>${pdfFileName || 'ZenWriter Document'}</span>
-            <span>${new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</span>
+          <div style="border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 30px; display: flex; justify-content: space-between; font-family: sans-serif; font-size: 9pt; color: #999;">
+            <span>ZenWriter</span>
+            <span>${new Date().toLocaleDateString()}</span>
           </div>
-          <div style="white-space: pre-wrap; word-wrap: break-word; text-align: left; width: 100%;">
+          <div style="text-align: justify;">
             ${text}
           </div>
-          <div style="margin-top: 40px; border-top: 1px solid #f0f0f0; padding-top: 15px; text-align: center; font-size: 7pt; color: #d0d0d0; letter-spacing: 0.05em;">
-            Handcrafted in ZenWriter
+          <div style="margin-top: 50px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; font-family: sans-serif; font-size: 8pt; color: #ccc;">
+            Generated by ZenWriter
           </div>
         </div>
       `;
@@ -474,7 +276,7 @@ export default function App() {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className={`flex items-center justify-start gap-1 sm:gap-1.5 ${theme === 'dark' ? 'bg-zinc-900/95 border-white/10' : 'bg-white/95 border-black/10'} backdrop-blur-xl border shadow-2xl rounded-2xl sm:rounded-full px-2 py-2 sm:px-3 sm:py-2 overflow-x-auto no-scrollbar`}
+          className={`flex items-center justify-between sm:justify-start gap-1 sm:gap-1.5 ${theme === 'dark' ? 'bg-zinc-900/95 border-white/10' : 'bg-white/95 border-black/10'} backdrop-blur-xl border shadow-2xl rounded-2xl sm:rounded-full px-2 py-2 sm:px-3 sm:py-2 overflow-hidden`}
         >
           <div className="flex items-center gap-0.5 sm:gap-1">
             <button
@@ -544,55 +346,6 @@ export default function App() {
 
           <div className="flex items-center gap-0.5 sm:gap-1">
             <button
-              onClick={() => execCommand('justifyLeft')}
-              className={`p-2.5 sm:p-2 rounded-xl sm:rounded-full transition-all active:scale-90 flex-shrink-0 ${
-                formatState.alignLeft 
-                  ? (theme === 'dark' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
-                  : (theme === 'dark' ? 'hover:bg-white/5 text-zinc-300' : 'hover:bg-black/5 text-zinc-800')
-              }`}
-              title="Align Left"
-            >
-              <AlignLeft className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => execCommand('justifyCenter')}
-              className={`p-2.5 sm:p-2 rounded-xl sm:rounded-full transition-all active:scale-90 flex-shrink-0 ${
-                formatState.alignCenter 
-                  ? (theme === 'dark' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
-                  : (theme === 'dark' ? 'hover:bg-white/5 text-zinc-300' : 'hover:bg-black/5 text-zinc-800')
-              }`}
-              title="Align Center"
-            >
-              <AlignCenter className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => execCommand('justifyRight')}
-              className={`p-2.5 sm:p-2 rounded-xl sm:rounded-full transition-all active:scale-90 flex-shrink-0 ${
-                formatState.alignRight 
-                  ? (theme === 'dark' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
-                  : (theme === 'dark' ? 'hover:bg-white/5 text-zinc-300' : 'hover:bg-black/5 text-zinc-800')
-              }`}
-              title="Align Right"
-            >
-              <AlignRight className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => execCommand('justifyFull')}
-              className={`p-2.5 sm:p-2 rounded-xl sm:rounded-full transition-all active:scale-90 flex-shrink-0 ${
-                formatState.alignJustify 
-                  ? (theme === 'dark' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-50 text-emerald-600') 
-                  : (theme === 'dark' ? 'hover:bg-white/5 text-zinc-300' : 'hover:bg-black/5 text-zinc-800')
-              }`}
-              title="Justify"
-            >
-              <AlignJustify className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className={`w-px h-4 mx-1 ${theme === 'dark' ? 'bg-white/10' : 'bg-black/10'} flex-shrink-0`} />
-
-          <div className="flex items-center gap-0.5 sm:gap-1">
-            <button
               onClick={() => setIsExportConfirmOpen(true)}
               disabled={isGenerating || getPlainText(text).length === 0}
               title="Download as PDF"
@@ -651,7 +404,7 @@ export default function App() {
           onPaste={handlePaste}
           className={`flex-1 w-full bg-transparent border-none outline-none text-base sm:text-lg md:text-xl leading-relaxed ${theme === 'dark' ? 'text-zinc-200' : 'text-zinc-900'} focus:ring-0 p-0 transition-all duration-300 min-h-[50vh] relative before:content-[attr(data-placeholder)] before:absolute before:left-0 before:top-0 before:pointer-events-none ${getPlainText(text).trim() === '' ? (theme === 'dark' ? 'before:text-zinc-800' : 'before:text-zinc-300') : 'before:hidden'}`}
           data-placeholder="Write here something..."
-          style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', textAlign: 'left' }}
+          style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
         />
       </main>
 
@@ -779,9 +532,9 @@ export default function App() {
                   </label>
                   <div className={`flex p-1 rounded-xl ${theme === 'dark' ? 'bg-zinc-800' : 'bg-zinc-100'}`}>
                     {[
-                      { label: 'Narrow', value: 30 },
-                      { label: 'Normal', value: 50 },
-                      { label: 'Wide', value: 72 }
+                      { label: 'Narrow', value: 10 },
+                      { label: 'Normal', value: 20 },
+                      { label: 'Wide', value: 30 }
                     ].map((m) => (
                       <button
                         key={m.value}
